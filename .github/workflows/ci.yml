@@ -1,0 +1,73 @@
+name: CI
+
+# Two jobs, deliberately split by cost and by what they can prove.
+#
+# `checks` is the one that matters most and costs seconds: it runs the offline
+# DSP tests (no hardware) and the licence-header sweep. The project's documented
+# hazard is audio that is *silently* wrong -- a build that succeeds and produces
+# a plausible-looking binary that is broken on the wire -- so the checks that
+# can run without a board are the ones worth automating first.
+#
+# `firmware` compiles one sketch for one board. It exists to catch a broken pin
+# or a moved board-core requirement, which nothing offline can see. It downloads
+# a board core, so it is slow and is allowed to fail without blocking a merge
+# until it has proven itself on this repo.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Offline checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ python3
+
+      # Runs tests/test_resampler.cpp, tools/sim_bridge.py and
+      # tools/add_license_headers.py --check. Exits non-zero on any failure, so
+      # no output assertions are needed here.
+      - name: Run offline tests
+        run: ./scripts/run_tests.sh
+
+  firmware:
+    name: Firmware build (SineToneTest / Pico)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+            | BINDIR=/usr/local/bin sh
+          arduino-cli version
+
+      # Pins the four dependencies by SHA. libs/ is gitignored, so this is the
+      # step that would fail if a pin went away upstream.
+      #
+      # Uac2Bridge is first-party and lives in its own repo, which has to exist on
+      # GitHub for this to work unattended. Until controllercustom/Uac2Bridge is
+      # pushed, this step fails here -- which is one reason the job is
+      # continue-on-error. `checks` is the required job and never runs this.
+      - name: Fetch pinned libraries
+        run: ./scripts/setup_libs.sh
+
+      # build.sh installs the board core itself and asserts after compiling that
+      # the build actually used the pinned TinyUSB_Arduino. Do not add --full
+      # here: the GIGA core alone is a large download and this job exists to be
+      # cheap, not exhaustive. ./scripts/build.sh --full is the exhaustive run.
+      - name: Build SineToneTest for Pico
+        run: ./scripts/build.sh SineToneTest pico
+
+      - name: Show flash usage
+        run: ls -l build/SineToneTest_pico/*.uf2

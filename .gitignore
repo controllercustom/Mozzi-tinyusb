@@ -1,0 +1,4 @@
+build/
+libs/
+tools/__pycache__/
+*.raw
